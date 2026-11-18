@@ -90,7 +90,7 @@
 
   function detectInitialSeller() {
     const params = new URLSearchParams(window.location.search);
-    const sellerParam = (params.get('vendedor') || params.get('v') || '').toLowerCase();
+    const sellerParam = (params.get('vendedor') || params.get('v') || params.get('rep') || '').toLowerCase();
     if (sellerParam && VENDEDORES[sellerParam]) {
       return sellerParam;
     }
@@ -135,15 +135,15 @@
     const path = (window.location.pathname || '').toLowerCase();
     const params = new URLSearchParams(window.location.search);
     if (
-      path.includes('vendedor') ||
-      path.includes('cotacao') ||
-      path.includes('sem-preco') ||
       params.get('precos') === '0' ||
       params.get('sem-preco') === '1' ||
       params.get('modo') === 'sem-preco' ||
-      params.get('modo') === 'vendedor' ||
       params.get('modo') === 'cotacao'
     ) {
+      return true;
+    }
+    // Apenas ativa modo sem preço se for vendedor ou cotação e não tiver sido pedido explicitamente precos=1
+    if ((path.includes('vendedor') || path.includes('cotacao') || path.includes('sem-preco')) && params.get('precos') !== '1') {
       return true;
     }
     return false;
@@ -231,15 +231,13 @@
     if (isVendorMode) {
       return { priceType: 'cotacao', priceValue: 0, priceFormatted: '' };
     }
-    const minAtacado = product.minAtacado || 6;
-    let resolvedType = requestedType;
+    const is18k = (product.badge && product.badge.includes('1,8kg')) || (product.sub && product.sub.includes('1,8kg'));
+    const minAtacado = product.minAtacado || (is18k ? 2 : 15);
+    const numericQty = Math.max(1, parseInt(qty, 10) || 1);
 
-    // Se atingir a quantidade mínima de atacado, aplica automaticamente atacado!
-    if (qty >= minAtacado) {
-      resolvedType = 'atacado';
-    } else if (requestedType !== 'atacado') {
-      resolvedType = 'varejo';
-    }
+    // Regra canônica: se a quantidade atingir ou superar a quantidade mínima de atacado
+    // (caixa fechada ou 2 unidades 1,8kg), entra automaticamente o custo de varejo com desconto (atacado)!
+    const resolvedType = numericQty >= minAtacado ? 'atacado' : 'varejo';
 
     const priceFormatted =
       (resolvedType === 'atacado'
@@ -255,6 +253,7 @@
     const product = productMap.get(productId);
     if (!product) return;
 
+    const is18k = (product.badge && product.badge.includes('1,8kg')) || (product.sub && product.sub.includes('1,8kg'));
     const numericQty = Math.max(1, parseInt(qty, 10) || 1);
     const existingIndex = cart.findIndex((item) => item.id === productId);
 
@@ -277,7 +276,7 @@
         priceFormatted: pricing.priceFormatted,
         qty: numericQty,
         image: product.image || '',
-        minAtacado: product.minAtacado || 6
+        minAtacado: product.minAtacado || (is18k ? 2 : 15)
       });
     }
 
@@ -756,6 +755,14 @@
         </div>
       `;
 
+    let badgeHtml = '';
+    if (item.badge) {
+      let badgeClass = 'product-badge';
+      if (item.badge.includes('Palmito 1,8kg')) badgeClass += ' badge-palmito-18k';
+      else if (item.badge.includes('Conserva 1,8kg')) badgeClass += ' badge-conserva-18k';
+      badgeHtml = `<span class="${badgeClass}">${escapeHtml(item.badge)}</span>`;
+    }
+
     const embalagemHtml = item.embalagem
       ? `<span class="card-spec">${escapeHtml(item.embalagem)}</span>`
       : '';
@@ -790,52 +797,50 @@
         </div>
       `;
     } else {
-      // MODO COM PREÇO (Catálogo Oficial Padrão Varejo e Atacado)
+      // MODO COM PREÇO (Catálogo Oficial Padrão Varejo e Atacado - Formato Alinhado à Tabela da Elaine)
+      const is18k = (item.badge && item.badge.includes('1,8kg')) || (item.sub && item.sub.includes('1,8kg'));
       const varejoVal = item.varejo ? `R$ ${escapeHtml(item.varejo)}` : 'Sob consulta';
       const atacadoVal = item.atacado ? `R$ ${escapeHtml(item.atacado)}` : 'Sob consulta';
-      const minAtacado = item.minAtacado || 6;
-      const initialDiff = Math.max(1, minAtacado - 1);
-      const wholesaleRuleText = `Adicione +${initialDiff} para ativar atacado (${minAtacado} un.)`;
+      const minAtacado = item.minAtacado || (is18k ? 2 : 15);
       const atacadoSubText = `a partir de ${minAtacado} un.`;
+      const isAtacadoDefault = false;
+      const initialQty = 1;
 
       purchaseBlockHtml = `
-        <button
-          type="button"
-          class="card-wholesale-rule is-actionable"
-          data-rule-for="${item.id}"
-          data-min-atacado="${minAtacado}"
-          title="Clique para adicionar +${initialDiff} e ativar preço de atacado (${minAtacado} un.)"
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
-          <span class="rule-text">${wholesaleRuleText}</span>
-        </button>
-        <div class="card-pricing-selector" role="group" aria-label="Modalidade de compra para ${safeTitle}">
+        <div class="card-pricing-table-header" aria-hidden="true">
+          <span class="pricing-col-head atacado-col-head">Atacado</span>
+          <span class="pricing-col-head varejo-col-head">Varejo</span>
+        </div>
+        <div class="card-pricing-selector" role="group" aria-label="Preços por quantidade para ${safeTitle}">
           <button
             type="button"
-            class="pricing-pill is-active"
-            data-pricing-type="varejo"
-            aria-pressed="true"
-          >
-            <span class="pill-type">Varejo</span>
-            <span class="pill-val">${varejoVal}</span>
-            <span class="pill-sub">por unidade</span>
-          </button>
-          <button
-            type="button"
-            class="pricing-pill"
+            class="pricing-pill atacado-pill"
             data-pricing-type="atacado"
             aria-pressed="false"
+            title="Preço com desconto por volume: ${atacadoVal} (${atacadoSubText})"
           >
-            <span class="pill-type">Atacado</span>
             <span class="pill-val">${atacadoVal}</span>
             <span class="pill-sub">${atacadoSubText}</span>
           </button>
+          <button
+            type="button"
+            class="pricing-pill varejo-pill is-active"
+            data-pricing-type="varejo"
+            aria-pressed="true"
+            title="Preço unitário avulso: ${varejoVal} por unidade"
+          >
+            <span class="pill-val">${varejoVal}</span>
+            <span class="pill-sub">por unidade</span>
+          </button>
+        </div>
+        <div class="card-tier-feedback is-retail" data-tier-feedback="${item.id}">
+          A partir de ${minAtacado} un. entra valor com desconto
         </div>
 
         <div class="card-cart-action-group">
           <div class="qty-control">
             <button type="button" class="qty-btn" data-action="minus" aria-label="Diminuir">-</button>
-            <input type="number" class="qty-input" value="1" min="1" max="999" aria-label="Quantidade">
+            <input type="number" class="qty-input" value="${initialQty}" min="1" max="999" aria-label="Quantidade">
             <button type="button" class="qty-btn" data-action="plus" aria-label="Aumentar">+</button>
           </div>
           <button
@@ -857,7 +862,10 @@
     return `
       <article class="product-card${enterClass}" data-product-card-id="${item.id}"${enterStyle}>
         ${mediaHtml}
-        ${embalagemHtml}
+        <div class="card-badges-row">
+          ${badgeHtml}
+          ${embalagemHtml}
+        </div>
         <h3 class="card-title">${safeTitle}</h3>
         <div class="card-bottom">
           <hr class="card-divider" aria-hidden="true" />
@@ -1626,36 +1634,115 @@
 
       // Modo Grid contínua quando filtrado, carrossel quando em visão global sem filtros
       const trackClass = hasActiveFilters ? 'product-track is-grid' : 'product-track';
-      const cardsHtml = filteredItems
-        .map((item, index) => renderProductCard(item, currentSectionIndex, index, hasActiveFilters))
-        .join('');
+      let bodyHtml = '';
 
-      const bodyHtml = `
-        <div class="container">
-          <div class="carousel-viewport">
-            <div
-              class="${trackClass}"
-              tabindex="0"
-              role="region"
-              aria-label="Produtos da seção ${escapeHtml(section.title)}"
-            >
-              ${cardsHtml}
-            </div>
-          </div>
-          ${
-            hasActiveFilters
-              ? ''
-              : `
-                <div class="carousel-footer" aria-hidden="true">
-                  <div class="carousel-progress-track">
-                    <span class="carousel-progress-thumb"></span>
+      if (section.id === 'linha-18k') {
+        // Separação e Identificação dos Palmitos 1,8kg e Conservas 1,8kg (Feedback Elaine Eventos)
+        const palmitos18k = filteredItems.filter((item) =>
+          (item.badge && item.badge.includes('Palmito')) || (item.sub && item.sub.includes('Palmito'))
+        );
+        const conservas18k = filteredItems.filter((item) =>
+          (item.badge && item.badge.includes('Conserva')) || (item.sub && item.sub.includes('Conserva'))
+        );
+
+        let subSectionsHtml = '';
+
+        if (palmitos18k.length > 0) {
+          const cardsPalmitosHtml = palmitos18k
+            .map((item, index) => renderProductCard(item, currentSectionIndex, index, hasActiveFilters))
+            .join('');
+
+          subSectionsHtml += `
+            <div class="subgroup-block" id="subgroup-palmitos-18k">
+              <div class="subgroup-badge-banner">
+                <div class="subgroup-banner-left">
+                  <span class="subgroup-icon">🎋</span>
+                  <div>
+                    <h3 class="subgroup-title">Palmitos Grandes (1,8kg Drenado)</h3>
+                    <span class="subgroup-count">${palmitos18k.length} variedades (Toletes, Coração, Picado, Rodela, Banda e Espeto)</span>
                   </div>
-                  <span class="carousel-hint">Arraste para o lado para explorar mais</span>
                 </div>
-              `
-          }
-        </div>
-      `;
+              </div>
+              <div class="carousel-viewport">
+                <div class="${trackClass}" tabindex="0" role="region" aria-label="Palmitos Food Service 1,8kg">
+                  ${cardsPalmitosHtml}
+                </div>
+              </div>
+            </div>
+          `;
+        }
+
+        if (conservas18k.length > 0) {
+          const cardsConservasHtml = conservas18k
+            .map((item, index) => renderProductCard(item, currentSectionIndex, palmitos18k.length + index, hasActiveFilters))
+            .join('');
+
+          subSectionsHtml += `
+            <div class="subgroup-block" id="subgroup-conservas-18k" style="margin-top: 28px;">
+              <div class="subgroup-badge-banner">
+                <div class="subgroup-banner-left">
+                  <span class="subgroup-icon">🫒</span>
+                  <div>
+                    <h3 class="subgroup-title">Conservas Grandes (1,8kg Drenado)</h3>
+                    <span class="subgroup-count">${conservas18k.length} variedades (Ovos de Codorna Danimar 2,8kg e Pepino Pommer 3,1kg)</span>
+                  </div>
+                </div>
+              </div>
+              <div class="carousel-viewport">
+                <div class="${trackClass}" tabindex="0" role="region" aria-label="Conservas Nobres Food Service 1,8kg">
+                  ${cardsConservasHtml}
+                </div>
+              </div>
+            </div>
+          `;
+        }
+
+        bodyHtml = `
+          <div class="container">
+            ${subSectionsHtml}
+            ${
+              hasActiveFilters
+                ? ''
+                : `
+                  <div class="carousel-footer" aria-hidden="true">
+                    <span class="carousel-hint">Arraste para o lado para explorar todas as opções de 1,8kg</span>
+                  </div>
+                `
+            }
+          </div>
+        `;
+      } else {
+        const cardsHtml = filteredItems
+          .map((item, index) => renderProductCard(item, currentSectionIndex, index, hasActiveFilters))
+          .join('');
+
+        bodyHtml = `
+          <div class="container">
+            <div class="carousel-viewport">
+              <div
+                class="${trackClass}"
+                tabindex="0"
+                role="region"
+                aria-label="Produtos da seção ${escapeHtml(section.title)}"
+              >
+                ${cardsHtml}
+              </div>
+            </div>
+            ${
+              hasActiveFilters
+                ? ''
+                : `
+                  <div class="carousel-footer" aria-hidden="true">
+                    <div class="carousel-progress-track">
+                      <span class="carousel-progress-thumb"></span>
+                    </div>
+                    <span class="carousel-hint">Arraste para o lado para explorar mais</span>
+                  </div>
+                `
+            }
+          </div>
+        `;
+      }
 
       sectionEl.innerHTML = headerHtml + bodyHtml;
       fragment.appendChild(sectionEl);
@@ -1706,13 +1793,13 @@
     cards.forEach((card) => {
       const productId = card.dataset.productCardId;
       const product = productMap.get(productId);
-      const minAtacado = (product && product.minAtacado) || 6;
+      const is18k = product && ((product.badge && product.badge.includes('1,8kg')) || (product.sub && product.sub.includes('1,8kg')));
+      const minAtacado = (product && product.minAtacado) || (is18k ? 2 : 15);
       const pills = Array.from(card.querySelectorAll('.pricing-pill'));
       const addBtn = card.querySelector('.btn-add-cart');
       const qtyInput = card.querySelector('.qty-input');
       const minusBtn = card.querySelector('[data-action="minus"]');
       const plusBtn = card.querySelector('[data-action="plus"]');
-      const ruleBadge = card.querySelector('.card-wholesale-rule');
 
       function syncWholesaleByQuantity(newQty, explicitType = null) {
         if (!product) return;
@@ -1720,7 +1807,7 @@
         let targetType = explicitType;
 
         if (!targetType) {
-          // Muda sozinho para atacado se atingir a quantidade mínima!
+          // Muda automaticamente para atacado (custo com desconto) ao atingir a quantidade mínima!
           targetType = qtyNum >= minAtacado ? 'atacado' : 'varejo';
         }
 
@@ -1734,35 +1821,19 @@
           addBtn.dataset.selectedType = targetType;
         }
 
-        if (ruleBadge) {
-          const textSpan = ruleBadge.querySelector('.rule-text');
-          if (targetType === 'atacado' || qtyNum >= minAtacado) {
-            ruleBadge.classList.add('is-applied');
-            ruleBadge.classList.remove('is-actionable');
-            if (textSpan) textSpan.textContent = `✓ Preço de atacado ativado (${qtyNum} un.)`;
-            ruleBadge.title = `Preço de atacado ativo para ${qtyNum} unidades`;
+        const feedbackEl = card.querySelector(`[data-tier-feedback="${productId}"]`);
+        if (feedbackEl) {
+          if (targetType === 'atacado') {
+            feedbackEl.className = 'card-tier-feedback has-discount';
+            feedbackEl.innerHTML = `<span>&check; Desconto por volume ativado (${qtyNum} un.)</span>`;
           } else {
-            const diff = Math.max(1, minAtacado - qtyNum);
-            ruleBadge.classList.remove('is-applied');
-            ruleBadge.classList.add('is-actionable');
-            if (textSpan) textSpan.textContent = `Adicione +${diff} para ativar atacado (${minAtacado} un.)`;
-            ruleBadge.title = `Clique para adicionar +${diff} e ativar preço de atacado (${minAtacado} un.)`;
+            feedbackEl.className = 'card-tier-feedback is-retail';
+            feedbackEl.textContent = `A partir de ${minAtacado} un. entra valor com desconto`;
           }
         }
       }
 
-      // Atalho interativo no badge: clicar salta a quantidade para o atacado
-      if (ruleBadge) {
-        ruleBadge.addEventListener('click', () => {
-          const currentVal = parseInt(qtyInput ? qtyInput.value : 1, 10) || 1;
-          if (currentVal < minAtacado) {
-            if (qtyInput) qtyInput.value = minAtacado;
-            syncWholesaleByQuantity(minAtacado, 'atacado');
-          }
-        });
-      }
-
-      // Cliques nas pílulas Varejo / Atacado
+      // Cliques nas pílulas Atacado / Varejo
       pills.forEach((pill) => {
         pill.addEventListener('click', () => {
           const chosenType = pill.dataset.pricingType || 'varejo';
@@ -1776,7 +1847,7 @@
           } else {
             const currentVal = parseInt(qtyInput ? qtyInput.value : 1, 10) || 1;
             if (currentVal >= minAtacado && qtyInput) {
-              qtyInput.value = Math.max(1, minAtacado - 1);
+              qtyInput.value = 1;
             }
             syncWholesaleByQuantity(qtyInput ? qtyInput.value : 1, 'varejo');
           }
@@ -1803,22 +1874,20 @@
       }
 
       if (qtyInput) {
-        qtyInput.addEventListener('input', () => {
-          const val = parseInt(qtyInput.value, 10) || 1;
+        qtyInput.addEventListener('change', () => {
+          const val = Math.max(1, Math.min(999, parseInt(qtyInput.value, 10) || 1));
+          qtyInput.value = val;
           syncWholesaleByQuantity(val);
         });
       }
 
-      // Botão Adicionar ao Carrinho / Cotação
+      // Clique em Adicionar ao Carrinho
       if (addBtn) {
         addBtn.addEventListener('click', () => {
-          const productId = addBtn.dataset.addToCart;
-          const type = addBtn.dataset.selectedType || addBtn.dataset.type || 'varejo';
           const qty = parseInt(qtyInput ? qtyInput.value : 1, 10) || 1;
+          const chosenType = qty >= minAtacado ? 'atacado' : 'varejo';
+          addToCart(productId, chosenType, qty);
 
-          addToCart(productId, type, qty);
-
-          // Feedback visual animado
           addBtn.classList.add('is-added');
           const originalHtml = addBtn.innerHTML;
           addBtn.innerHTML = `<span>&check; Adicionado!</span>`;
@@ -1826,6 +1895,8 @@
             addBtn.classList.remove('is-added');
             addBtn.innerHTML = originalHtml;
           }, 1400);
+
+          openCartDrawer();
         });
       }
     });
@@ -1834,7 +1905,13 @@
   function wireCarousels() {
     const sections = Array.from(sectionsRoot.querySelectorAll('.catalog-section'));
     sections.forEach((sec) => {
-      const track = sec.querySelector('.product-track');
+      const tracks = Array.from(sec.querySelectorAll('.product-track'));
+      tracks.forEach((track) => {
+        if (!track || track.classList.contains('is-grid')) return;
+        attachTrackDrag(track);
+      });
+
+      const track = tracks[0];
       if (!track || track.classList.contains('is-grid')) return;
 
       const prevBtn = sec.querySelector('[data-dir="-1"]');
@@ -1873,7 +1950,6 @@
         { passive: true }
       );
 
-      attachTrackDrag(track);
       updateCarouselState(sec);
     });
   }
